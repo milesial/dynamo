@@ -50,7 +50,7 @@ pub struct LocalScheduler<
 impl<P, C, S, Sel, RF> LocalScheduler<P, C, S, Sel, RF>
 where
     P: SequencePublisher + 'static,
-    C: WorkerConfigLike + Clone + PartialEq + Send + Sync + 'static,
+    C: WorkerConfigLike + Clone + Default + PartialEq + Send + Sync + 'static,
     S: SchedulingPolicy + 'static,
     Sel: WorkerSelector<C> + Send + Sync + 'static,
     RF: OverlapScoresRefresh + 'static,
@@ -394,7 +394,7 @@ where
 impl<P, C, S, Sel> LocalScheduler<P, C, S, Sel, NoopOverlapScoresRefresh>
 where
     P: SequencePublisher + 'static,
-    C: WorkerConfigLike + Clone + PartialEq + Send + Sync + 'static,
+    C: WorkerConfigLike + Clone + Default + PartialEq + Send + Sync + 'static,
     S: SchedulingPolicy + 'static,
     Sel: WorkerSelector<C> + Send + Sync + 'static,
 {
