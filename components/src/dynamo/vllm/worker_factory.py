@@ -585,6 +585,7 @@ class WorkerFactory:
                 clear_endpoint.serve_endpoint(
                     handler.clear_kv_blocks,
                     metrics_labels=model_metrics_labels,
+                    health_check_payload=health_check_payload,
                 ),
                 perf_endpoint.serve_endpoint(
                     handler.get_perf_metrics,
@@ -784,6 +785,7 @@ class WorkerFactory:
                 clear_endpoint.serve_endpoint(
                     handler.clear_kv_blocks,  # type: ignore
                     metrics_labels=prefill_metrics_labels,
+                    health_check_payload=health_check_payload,
                 ),
                 perf_endpoint.serve_endpoint(
                     handler.get_perf_metrics,

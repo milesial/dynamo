@@ -500,9 +500,12 @@ async def init_llm_worker(
         endpoint = runtime.endpoint(
             f"{config.namespace}.{config.component}.{config.endpoint}"
         )
+        clear_endpoint = runtime.endpoint(
+            f"{config.namespace}.{config.component}.clear_kv_blocks"
+        )
 
         if shutdown_endpoints is not None:
-            shutdown_endpoints[:] = [endpoint]
+            shutdown_endpoints[:] = [endpoint, clear_endpoint]
 
         # should ideally call get_engine_runtime_config
         # this is because we don't have a good way to
@@ -752,10 +755,17 @@ async def init_llm_worker(
                         model_name=model_name_for_metrics,
                         component_name=config.component,
                     )
-                await endpoint.serve_endpoint(
-                    handler.generate,
-                    metrics_labels=metrics_labels,
-                    health_check_payload=health_check_payload,
+                await asyncio.gather(
+                    endpoint.serve_endpoint(
+                        handler.generate,
+                        metrics_labels=metrics_labels,
+                        health_check_payload=health_check_payload,
+                    ),
+                    clear_endpoint.serve_endpoint(
+                        handler.clear_kv_blocks,
+                        metrics_labels=metrics_labels,
+                        health_check_payload=health_check_payload,
+                    ),
                 )
 
             # Shutdown consolidator publisher if it was created
@@ -765,6 +775,11 @@ async def init_llm_worker(
             handler = RequestHandlerFactory().get_request_handler(handler_config)
             if config.load_format == "gms":
                 _register_memory_routes(runtime, handler)
-            await endpoint.serve_endpoint(
-                handler.generate, health_check_payload=health_check_payload
+            await asyncio.gather(
+                endpoint.serve_endpoint(
+                    handler.generate, health_check_payload=health_check_payload
+                ),
+                clear_endpoint.serve_endpoint(
+                    handler.clear_kv_blocks, health_check_payload=health_check_payload
+                ),
             )

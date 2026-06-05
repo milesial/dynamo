@@ -408,6 +408,15 @@ class HandlerBase(BaseGenerativeHandler):
                 logger.error("resume_memory_occupation failed: %s", exc)
                 return {"status": "error", "message": str(exc)}
 
+    async def clear_kv_blocks(self, request=None):
+        """Invalidate TRT-LLM's local KV prefix-cache reuse state."""
+        try:
+            self.engine.reset_prefix_cache()
+            yield {"status": "success", "message": "KV cache cleared"}
+        except Exception as exc:
+            logger.error("clear_kv_blocks failed: %s", exc)
+            yield {"status": "error", "message": str(exc)}
+
     @staticmethod
     def _extract_logprobs(
         output, num_output_tokens_so_far: int

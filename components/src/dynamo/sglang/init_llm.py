@@ -57,6 +57,9 @@ async def init_decode(
     generate_endpoint = runtime.endpoint(
         f"{dynamo_args.namespace}.{dynamo_args.component}.{dynamo_args.endpoint}"
     )
+    clear_endpoint = runtime.endpoint(
+        f"{dynamo_args.namespace}.{dynamo_args.component}.clear_kv_blocks"
+    )
 
     # Use pre-created engine if provided (snapshot mode)
     if snapshot_engine is not None:
@@ -88,7 +91,7 @@ async def init_decode(
         f"{dynamo_args.namespace}.{dynamo_args.component}.list_loras"
     )
 
-    shutdown_endpoints[:] = [generate_endpoint]
+    shutdown_endpoints[:] = [generate_endpoint, clear_endpoint]
 
     publisher, metrics_task, metrics_labels = await setup_sgl_metrics(
         engine, config, generate_endpoint
@@ -167,6 +170,11 @@ async def init_decode(
                 handler.list_loras,
                 metrics_labels=metrics_labels,
             ),
+            clear_endpoint.serve_endpoint(
+                handler.clear_kv_blocks,
+                metrics_labels=metrics_labels,
+                health_check_payload=health_check_payload,
+            ),
             register_model_with_readiness_gate(
                 engine,
                 generate_endpoint,
@@ -215,6 +223,9 @@ async def init_prefill(
     generate_endpoint = runtime.endpoint(
         f"{dynamo_args.namespace}.{dynamo_args.component}.{dynamo_args.endpoint}"
     )
+    clear_endpoint = runtime.endpoint(
+        f"{dynamo_args.namespace}.{dynamo_args.component}.clear_kv_blocks"
+    )
 
     # Use pre-created engine if provided (snapshot mode)
     if snapshot_engine is not None:
@@ -246,7 +257,7 @@ async def init_prefill(
         f"{dynamo_args.namespace}.{dynamo_args.component}.list_loras"
     )
 
-    shutdown_endpoints[:] = [generate_endpoint]
+    shutdown_endpoints[:] = [generate_endpoint, clear_endpoint]
 
     publisher, metrics_task, metrics_labels = await setup_sgl_metrics(
         engine, config, generate_endpoint
@@ -300,6 +311,11 @@ async def init_prefill(
             list_loras_endpoint.serve_endpoint(
                 handler.list_loras,
                 metrics_labels=metrics_labels,
+            ),
+            clear_endpoint.serve_endpoint(
+                handler.clear_kv_blocks,
+                metrics_labels=metrics_labels,
+                health_check_payload=health_check_payload,
             ),
             register_model_with_readiness_gate(
                 engine,

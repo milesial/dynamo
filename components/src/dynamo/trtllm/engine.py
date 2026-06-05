@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # (missing @register_vision_encoder). These handle vision encoding
 # inside the main model (prefill/decode) instead.
 _UNSUPPORTED_STANDALONE_ENCODER_ARCHS = {"Llama4ForConditionalGeneration"}
+_TRTLLM_RLHF_WORKER_EXTENSION = "tensorrt_llm.llmapi.rlhf_utils.WorkerExtension"
 
 
 class Backend(str, enum.Enum):
@@ -49,6 +50,11 @@ class TensorRTLLMEngine:
         backend = engine_args.pop("backend", Backend.PYTORCH)
         if backend == Backend.PYTORCH:
             self._llm_cls = LLM
+            if engine_args.get("orchestrator_type") == "ray":
+                engine_args.setdefault(
+                    "ray_worker_extension_cls",
+                    _TRTLLM_RLHF_WORKER_EXTENSION,
+                )
         elif backend == Backend.AUTODEPLOY:
             from tensorrt_llm._torch.auto_deploy import LLM as AutoDeployLLM
 
@@ -158,6 +164,23 @@ class TensorRTLLMEngine:
         if callable(check_health):
             return check_health
         return None
+
+    def reset_prefix_cache(self) -> None:
+        executor = getattr(self.llm, "_executor", None)
+        for target in (self.llm, executor, getattr(executor, "engine", None)):
+            reset_prefix_cache = getattr(target, "reset_prefix_cache", None)
+            if callable(reset_prefix_cache):
+                reset_prefix_cache()
+                return
+
+        collective_rpc = getattr(self.llm, "_collective_rpc", None)
+        if callable(collective_rpc):
+            collective_rpc("reset_prefix_cache", args=(), kwargs={})
+            return
+
+        raise NotImplementedError(
+            "reset_prefix_cache() is only supported by the PyTorch backend."
+        )
 
     def get_attention_dp_size(self) -> int:
         """Return attention_dp_size (tensor_parallel_size if attention DP enabled, else 1).

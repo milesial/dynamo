@@ -10,6 +10,7 @@
 import asyncio
 import json
 from collections import defaultdict
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -129,6 +130,29 @@ def _make_engine_response(request_id: str = "req-1", finished: bool = True):
     resp.metrics = None
     resp.kv_transfer_params = {"do_remote_decode": False}
     return resp
+
+
+class _ClearKVBlocksHandler(mod.BaseWorkerHandler):
+    async def generate(self, request, context):
+        yield {}
+
+
+def _make_clear_kv_blocks_handler() -> _ClearKVBlocksHandler:
+    handler = _ClearKVBlocksHandler.__new__(_ClearKVBlocksHandler)
+    handler.engine_client = SimpleNamespace(reset_prefix_cache=AsyncMock())
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_resets_vllm_external_cache():
+    handler = _make_clear_kv_blocks_handler()
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks()]
+
+    assert chunks == [{"status": "success", "message": "KV cache cleared"}]
+    handler.engine_client.reset_prefix_cache.assert_awaited_once_with(
+        reset_connector=True
+    )
 
 
 class TestReasoningParserForwarding:

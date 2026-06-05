@@ -54,6 +54,8 @@ def handler():
             release_memory_occupation=AsyncMock(),
             resume_memory_occupation=AsyncMock(),
             continue_generation=AsyncMock(),
+            flush_cache=AsyncMock(return_value=SimpleNamespace(success=True)),
+            clear_hicache_storage=AsyncMock(return_value=SimpleNamespace(success=True)),
         )
     )
     handler.generate_endpoint = SimpleNamespace(
@@ -219,3 +221,55 @@ async def test_resume_keeps_paused_state_when_register_fails(handler):
     assert result["status"] == "error"
     assert handler._pause_controller is not None
     assert handler._pause_controller.is_paused is True
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_flushes_sglang_cache(handler):
+    chunks = [chunk async for chunk in handler.clear_kv_blocks({"timeout_s": 3})]
+
+    assert chunks == [{"status": "success", "message": "KV cache cleared"}]
+    handler.engine.tokenizer_manager.flush_cache.assert_awaited_once_with(
+        timeout_s=3.0
+    )
+    handler.engine.tokenizer_manager.clear_hicache_storage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_clears_configured_sglang_external_cache(handler):
+    handler.engine.tokenizer_manager.server_args = SimpleNamespace(
+        hicache_storage_backend="nixl"
+    )
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks({"timeout_s": 3})]
+
+    assert chunks == [{"status": "success", "message": "KV cache cleared"}]
+    handler.engine.tokenizer_manager.flush_cache.assert_awaited_once_with(
+        timeout_s=3.0
+    )
+    handler.engine.tokenizer_manager.clear_hicache_storage.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_reports_flush_failure(handler):
+    handler.engine.tokenizer_manager.flush_cache = AsyncMock(
+        return_value=SimpleNamespace(success=False, message="cache busy")
+    )
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks({})]
+
+    assert chunks == [{"status": "error", "message": "cache busy"}]
+    handler.engine.tokenizer_manager.clear_hicache_storage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_reports_sglang_external_cache_failure(handler):
+    handler.engine.tokenizer_manager.server_args = SimpleNamespace(
+        hicache_storage_backend="nixl"
+    )
+    handler.engine.tokenizer_manager.clear_hicache_storage = AsyncMock(
+        return_value=SimpleNamespace(success=False, message="storage busy")
+    )
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks({})]
+
+    assert chunks == [{"status": "error", "message": "storage busy"}]

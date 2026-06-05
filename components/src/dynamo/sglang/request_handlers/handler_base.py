@@ -49,6 +49,25 @@ from dynamo.sglang.publisher import DynamoSglangPublisher
 logger = logging.getLogger(__name__)
 
 
+def _sglang_external_cache_configured(tokenizer_manager: Any) -> bool:
+    server_args = getattr(tokenizer_manager, "server_args", None)
+    if server_args is None:
+        return False
+
+    if getattr(server_args, "enable_lmcache", False):
+        return True
+
+    for field in ("hicache_storage_backend", "hicache_storage_backend_extra_config"):
+        value = getattr(server_args, field, None)
+        if isinstance(value, str):
+            if value.strip().lower() not in ("", "none", "null"):
+                return True
+        elif value:
+            return True
+
+    return False
+
+
 RequestT = TypeVar("RequestT")
 ResponseT = TypeVar("ResponseT")
 
@@ -795,6 +814,79 @@ class BaseWorkerHandler(LoraMixin, RLMixin, BaseGenerativeHandler[RequestT, Resp
             except Exception as e:
                 logging.error(f"Failed to resume memory occupation: {e}")
                 return {"status": "error", "message": str(e)}
+
+    async def clear_kv_blocks(self, request: Optional[Dict[str, Any]] = None):
+        """Flush SGLang's radix/prefix cache."""
+        try:
+            request = request or {}
+            tokenizer_manager = getattr(self.engine, "tokenizer_manager", None)
+            if tokenizer_manager is None:
+                yield {
+                    "status": "error",
+                    "message": "SGLang tokenizer_manager is not available",
+                }
+                return
+
+            if hasattr(tokenizer_manager, "auto_create_handle_loop"):
+                tokenizer_manager.auto_create_handle_loop()
+
+            flush_cache = getattr(tokenizer_manager, "flush_cache", None)
+            if flush_cache is None:
+                yield {
+                    "status": "error",
+                    "message": "SGLang tokenizer_manager does not support flush_cache",
+                }
+                return
+
+            timeout_s = float(request.get("timeout_s", request.get("timeout", 0.0)))
+            try:
+                signature = inspect.signature(flush_cache)
+
+                def supports_kwarg(name: str) -> bool:
+                    return name in signature.parameters or any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in signature.parameters.values()
+                    )
+
+            except (TypeError, ValueError):
+
+                def supports_kwarg(name: str) -> bool:
+                    return name == "timeout_s"
+
+            flush_kwargs = {}
+            if supports_kwarg("timeout_s"):
+                flush_kwargs["timeout_s"] = timeout_s
+            result = await flush_cache(**flush_kwargs)
+
+            success = getattr(result, "success", None)
+            if success is False or result is False:
+                yield {
+                    "status": "error",
+                    "message": getattr(result, "message", None) or "KV cache clear failed",
+                }
+                return
+
+            if _sglang_external_cache_configured(tokenizer_manager):
+                clear_hicache_storage = getattr(
+                    tokenizer_manager, "clear_hicache_storage", None
+                )
+                if callable(clear_hicache_storage):
+                    result = await clear_hicache_storage()
+                    success = getattr(result, "success", None)
+                    if success is False or result is False:
+                        yield {
+                            "status": "error",
+                            "message": (
+                                getattr(result, "message", None)
+                                or "External KV cache clear failed"
+                            ),
+                        }
+                        return
+
+            yield {"status": "success", "message": "KV cache cleared"}
+        except Exception as e:
+            logging.error(f"Failed to clear KV cache: {e}")
+            yield {"status": "error", "message": str(e)}
 
     async def start_profile(self, body: dict) -> dict:
         """Start profiling on the engine.

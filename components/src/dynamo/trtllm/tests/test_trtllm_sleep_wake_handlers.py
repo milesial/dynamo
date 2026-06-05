@@ -29,6 +29,7 @@ pytest.importorskip(
 )
 pytest.importorskip("tensorrt_llm")
 
+from dynamo.trtllm.engine import TensorRTLLMEngine  # noqa: E402
 from dynamo.trtllm.request_handlers.handler_base import (  # noqa: E402
     HandlerBase,
     TRTLLMEnginePauseController,
@@ -55,6 +56,7 @@ class _ConcreteHandler(HandlerBase):
 def _make_handler() -> _ConcreteHandler:
     """Create a HandlerBase subclass with mocked pause controller and endpoint."""
     handler = _ConcreteHandler.__new__(_ConcreteHandler)
+    handler.engine = SimpleNamespace(reset_prefix_cache=MagicMock())
     handler.generate_endpoint = SimpleNamespace(
         unregister_endpoint_instance=AsyncMock(),
         register_endpoint_instance=AsyncMock(),
@@ -80,6 +82,12 @@ def _make_handler() -> _ConcreteHandler:
     handler._pause_controller.resume = AsyncMock(return_value=True)
     handler._pause_controller.mark_resumed = MagicMock()
     return handler
+
+
+def _make_engine_with_llm(llm) -> TensorRTLLMEngine:
+    engine = TensorRTLLMEngine.__new__(TensorRTLLMEngine)
+    engine._llm = llm
+    return engine
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +299,60 @@ async def test_resume_passes_tags_to_controller():
     result = await handler.resume_memory_occupation({"tags": ["kv_cache"]})
     assert result["status"] == "ok"
     handler._pause_controller.resume.assert_awaited_once_with(["kv_cache"])
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_resets_trtllm_prefix_cache():
+    handler = _make_handler()
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks()]
+
+    assert chunks == [{"status": "success", "message": "KV cache cleared"}]
+    handler.engine.reset_prefix_cache.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_reports_trtllm_reset_error():
+    handler = _make_handler()
+    handler.engine.reset_prefix_cache.side_effect = RuntimeError("unsupported")
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks()]
+
+    assert chunks == [{"status": "error", "message": "unsupported"}]
+
+
+def test_trtllm_engine_reset_prefix_cache_uses_executor_fallback():
+    executor = SimpleNamespace(reset_prefix_cache=MagicMock())
+    engine = _make_engine_with_llm(SimpleNamespace(_executor=executor))
+
+    engine.reset_prefix_cache()
+
+    executor.reset_prefix_cache.assert_called_once_with()
+
+
+def test_trtllm_engine_reset_prefix_cache_uses_collective_rpc_fallback():
+    llm = SimpleNamespace(_collective_rpc=MagicMock())
+    engine = _make_engine_with_llm(llm)
+
+    engine.reset_prefix_cache()
+
+    llm._collective_rpc.assert_called_once_with(
+        "reset_prefix_cache", args=(), kwargs={}
+    )
+
+
+def test_trtllm_engine_sets_rlhf_worker_extension_for_ray():
+    engine = TensorRTLLMEngine(
+        {
+            "model": "dummy-model",
+            "orchestrator_type": "ray",
+        }
+    )
+
+    assert (
+        engine.engine_args["ray_worker_extension_cls"]
+        == "tensorrt_llm.llmapi.rlhf_utils.WorkerExtension"
+    )
 
 
 # ---------------------------------------------------------------------------
