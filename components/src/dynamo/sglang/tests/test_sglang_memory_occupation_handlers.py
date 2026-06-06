@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import dynamo.sglang.init_llm as init_llm_mod
 from dynamo.sglang.request_handlers.handler_base import (
     BaseWorkerHandler,
     SGLangEnginePauseController,
+    _sglang_external_cache_configured,
 )
 
 pytestmark = [
@@ -273,3 +275,147 @@ async def test_clear_kv_blocks_reports_sglang_external_cache_failure(handler):
     chunks = [chunk async for chunk in handler.clear_kv_blocks({})]
 
     assert chunks == [{"status": "error", "message": "storage busy"}]
+
+
+@pytest.mark.parametrize(
+    ("tokenizer_manager", "expected"),
+    [
+        (SimpleNamespace(), False),
+        (SimpleNamespace(server_args=SimpleNamespace(enable_lmcache=True)), True),
+        (
+            SimpleNamespace(
+                server_args=SimpleNamespace(
+                    hicache_storage_backend=None,
+                    hicache_storage_backend_extra_config={"path": "/tmp/cache"},
+                )
+            ),
+            True,
+        ),
+    ],
+)
+def test_sglang_external_cache_config_detection(tokenizer_manager, expected):
+    assert _sglang_external_cache_configured(tokenizer_manager) is expected
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_reports_missing_tokenizer_manager(handler):
+    handler.engine.tokenizer_manager = None
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks({})]
+
+    assert chunks == [
+        {
+            "status": "error",
+            "message": "SGLang tokenizer_manager is not available",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_reports_missing_flush_cache(handler):
+    delattr(handler.engine.tokenizer_manager, "flush_cache")
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks({})]
+
+    assert chunks == [
+        {
+            "status": "error",
+            "message": "SGLang tokenizer_manager does not support flush_cache",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clear_kv_blocks_reports_flush_exception(handler):
+    handler.engine.tokenizer_manager.flush_cache = AsyncMock(
+        side_effect=RuntimeError("flush crashed")
+    )
+
+    chunks = [chunk async for chunk in handler.clear_kv_blocks({})]
+
+    assert chunks == [{"status": "error", "message": "flush crashed"}]
+
+
+@pytest.mark.asyncio
+async def test_init_prefill_serves_clear_kv_blocks_endpoint(monkeypatch):
+    endpoints = {}
+
+    class FakeEndpoint:
+        def __init__(self, name):
+            self.name = name
+            self.serve_calls = []
+
+        async def serve_endpoint(self, handler, **kwargs):
+            self.serve_calls.append((handler, kwargs))
+
+    class FakeRuntime:
+        def endpoint(self, name):
+            endpoint = FakeEndpoint(name)
+            endpoints[name] = endpoint
+            return endpoint
+
+    class FakePrefillHandler:
+        def __init__(self, *args, **kwargs):
+            self.generate = AsyncMock()
+            self.clear_kv_blocks = AsyncMock()
+            self.load_lora = AsyncMock()
+            self.unload_lora = AsyncMock()
+            self.list_loras = AsyncMock()
+
+        def register_engine_routes(self, runtime):
+            pass
+
+        def cleanup(self):
+            pass
+
+    async def setup_sgl_metrics(*args, **kwargs):
+        publisher = SimpleNamespace(
+            component_gauges=SimpleNamespace(set_model_load_time=lambda _value: None)
+        )
+        metrics_task = asyncio.create_task(asyncio.sleep(3600))
+        return publisher, metrics_task, {"model": "dummy-model"}
+
+    async def register_model_with_readiness_gate(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(init_llm_mod, "set_forward_pass_metrics_worker_id", lambda *args: None)
+    monkeypatch.setattr(init_llm_mod.sgl, "Engine", lambda server_args: SimpleNamespace())
+    monkeypatch.setattr(init_llm_mod, "setup_sgl_metrics", setup_sgl_metrics)
+    monkeypatch.setattr(init_llm_mod, "_warmup_prefill_engine", AsyncMock())
+    monkeypatch.setattr(init_llm_mod, "PrefillWorkerHandler", FakePrefillHandler)
+    monkeypatch.setattr(
+        init_llm_mod,
+        "SglangPrefillHealthCheckPayload",
+        lambda engine: SimpleNamespace(to_dict=lambda: {"status": "ready"}),
+    )
+    monkeypatch.setattr(
+        init_llm_mod,
+        "register_model_with_readiness_gate",
+        register_model_with_readiness_gate,
+    )
+
+    config = SimpleNamespace(
+        server_args=SimpleNamespace(
+            node_rank=0,
+            enable_trace=False,
+            enable_forward_pass_metrics=False,
+        ),
+        dynamo_args=SimpleNamespace(
+            namespace="dynamo",
+            component="prefill",
+            endpoint="generate",
+        ),
+    )
+    shutdown_endpoints = []
+
+    await init_llm_mod.init_prefill(
+        FakeRuntime(),
+        config,
+        asyncio.Event(),
+        shutdown_endpoints,
+    )
+
+    clear_endpoint = endpoints["dynamo.prefill.clear_kv_blocks"]
+    assert clear_endpoint in shutdown_endpoints
+    assert len(clear_endpoint.serve_calls) == 1
+    assert "health_check_payload" not in clear_endpoint.serve_calls[0][1]

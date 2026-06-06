@@ -3,12 +3,15 @@
 
 import enum
 import logging
+import threading
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from tensorrt_llm import LLM, MultimodalEncoder
+from tensorrt_llm.executor.executor import GenerationExecutor
+from tensorrt_llm.executor.worker import GenerationExecutorWorker
 from tensorrt_llm.llmapi.llm import BaseLLM
 from transformers import AutoConfig
 
@@ -22,6 +25,66 @@ logger = logging.getLogger(__name__)
 # inside the main model (prefill/decode) instead.
 _UNSUPPORTED_STANDALONE_ENCODER_ARCHS = {"Llama4ForConditionalGeneration"}
 _TRTLLM_RLHF_WORKER_EXTENSION = "tensorrt_llm.llmapi.rlhf_utils.WorkerExtension"
+_GENERATION_EXECUTOR_CREATE_LOCK = threading.Lock()
+
+
+class DynamoGenerationExecutorWorker(GenerationExecutorWorker):
+    def reset_prefix_cache(self) -> None:
+        engine = getattr(self, "engine", None)
+        reset_prefix_cache = getattr(engine, "reset_prefix_cache", None)
+        if not callable(reset_prefix_cache):
+            raise NotImplementedError(
+                "reset_prefix_cache() is only supported by the PyTorch backend."
+            )
+
+        control_action = getattr(engine, "control_action", None)
+        if callable(control_action):
+            with control_action():
+                reset_prefix_cache()
+        else:
+            reset_prefix_cache()
+
+
+class DynamoGenerationExecutor(GenerationExecutor):
+    @staticmethod
+    def create(*args, **kwargs):
+        # TRT-LLM's static create() calls GenerationExecutor._create_ipc_executor()
+        # directly, so install our worker factory only for this construction.
+        with _GENERATION_EXECUTOR_CREATE_LOCK:
+            original = GenerationExecutor.__dict__["_create_ipc_executor"]
+            GenerationExecutor._create_ipc_executor = staticmethod(
+                DynamoGenerationExecutor._create_ipc_executor
+            )
+            try:
+                return GenerationExecutor.create(*args, **kwargs)
+            finally:
+                GenerationExecutor._create_ipc_executor = original
+
+    @staticmethod
+    def _create_ipc_executor(
+        worker_kwargs: dict[str, Any],
+        model_world_size: int,
+        mpi_session: Optional[Any],
+        postproc_worker_config: Any,
+        is_llm_executor: bool,
+        use_worker: bool = False,
+    ):
+        if use_worker:
+            return DynamoGenerationExecutorWorker(
+                **worker_kwargs,
+                is_llm_executor=is_llm_executor,
+            )
+
+        from tensorrt_llm.executor.proxy import GenerationExecutorProxy
+
+        return GenerationExecutorProxy(
+            worker_kwargs,
+            model_world_size=model_world_size,
+            mpi_session=mpi_session,
+            postproc_worker_config=postproc_worker_config,
+            is_llm_executor=is_llm_executor,
+            worker_cls=DynamoGenerationExecutorWorker,
+        )
 
 
 class Backend(str, enum.Enum):
@@ -55,6 +118,8 @@ class TensorRTLLMEngine:
                     "ray_worker_extension_cls",
                     _TRTLLM_RLHF_WORKER_EXTENSION,
                 )
+            else:
+                engine_args.setdefault("executor_cls", DynamoGenerationExecutor)
         elif backend == Backend.AUTODEPLOY:
             from tensorrt_llm._torch.auto_deploy import LLM as AutoDeployLLM
 
@@ -172,6 +237,11 @@ class TensorRTLLMEngine:
             if callable(reset_prefix_cache):
                 reset_prefix_cache()
                 return
+
+        rpc_client = getattr(executor, "rpc_client", None)
+        if rpc_client is not None:
+            rpc_client.reset_prefix_cache().remote(timeout=60)
+            return
 
         collective_rpc = getattr(self.llm, "_collective_rpc", None)
         if callable(collective_rpc):

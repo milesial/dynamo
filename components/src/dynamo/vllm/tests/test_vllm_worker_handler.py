@@ -147,8 +147,10 @@ def _make_clear_kv_blocks_handler() -> _ClearKVBlocksHandler:
 async def test_clear_kv_blocks_resets_vllm_external_cache():
     handler = _make_clear_kv_blocks_handler()
 
+    generated = [chunk async for chunk in handler.generate({}, None)]
     chunks = [chunk async for chunk in handler.clear_kv_blocks()]
 
+    assert generated == [{}]
     assert chunks == [{"status": "success", "message": "KV cache cleared"}]
     handler.engine_client.reset_prefix_cache.assert_awaited_once_with(
         reset_connector=True

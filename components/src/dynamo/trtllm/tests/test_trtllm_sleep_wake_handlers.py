@@ -8,6 +8,7 @@ TRTLLMEnginePauseController without requiring a real GPU or TRT-LLM engine.
 """
 
 import asyncio
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -29,7 +30,11 @@ pytest.importorskip(
 )
 pytest.importorskip("tensorrt_llm")
 
-from dynamo.trtllm.engine import TensorRTLLMEngine  # noqa: E402
+from dynamo.trtllm import engine as trt_engine_mod  # noqa: E402
+from dynamo.trtllm.engine import (  # noqa: E402
+    DynamoGenerationExecutorWorker,
+    TensorRTLLMEngine,
+)
 from dynamo.trtllm.request_handlers.handler_base import (  # noqa: E402
     HandlerBase,
     TRTLLMEnginePauseController,
@@ -330,6 +335,15 @@ def test_trtllm_engine_reset_prefix_cache_uses_executor_fallback():
     executor.reset_prefix_cache.assert_called_once_with()
 
 
+def test_trtllm_engine_reset_prefix_cache_uses_llm_direct_fallback():
+    llm = SimpleNamespace(reset_prefix_cache=MagicMock(), _executor=None)
+    engine = _make_engine_with_llm(llm)
+
+    engine.reset_prefix_cache()
+
+    llm.reset_prefix_cache.assert_called_once_with()
+
+
 def test_trtllm_engine_reset_prefix_cache_uses_collective_rpc_fallback():
     llm = SimpleNamespace(_collective_rpc=MagicMock())
     engine = _make_engine_with_llm(llm)
@@ -339,6 +353,13 @@ def test_trtllm_engine_reset_prefix_cache_uses_collective_rpc_fallback():
     llm._collective_rpc.assert_called_once_with(
         "reset_prefix_cache", args=(), kwargs={}
     )
+
+
+def test_trtllm_engine_reset_prefix_cache_reports_unsupported_backend():
+    engine = _make_engine_with_llm(SimpleNamespace(_executor=SimpleNamespace()))
+
+    with pytest.raises(NotImplementedError, match="PyTorch backend"):
+        engine.reset_prefix_cache()
 
 
 def test_trtllm_engine_sets_rlhf_worker_extension_for_ray():
@@ -353,6 +374,65 @@ def test_trtllm_engine_sets_rlhf_worker_extension_for_ray():
         engine.engine_args["ray_worker_extension_cls"]
         == "tensorrt_llm.llmapi.rlhf_utils.WorkerExtension"
     )
+
+
+def test_dynamo_generation_executor_worker_resets_under_control_action():
+    worker = DynamoGenerationExecutorWorker.__new__(DynamoGenerationExecutorWorker)
+    calls = []
+
+    @contextmanager
+    def control_action():
+        calls.append("enter")
+        yield
+        calls.append("exit")
+
+    worker.engine = SimpleNamespace(
+        reset_prefix_cache=MagicMock(side_effect=lambda: calls.append("reset")),
+        control_action=control_action,
+    )
+
+    worker.reset_prefix_cache()
+
+    assert calls == ["enter", "reset", "exit"]
+
+
+def test_dynamo_generation_executor_worker_resets_without_control_action():
+    worker = DynamoGenerationExecutorWorker.__new__(DynamoGenerationExecutorWorker)
+    worker.engine = SimpleNamespace(reset_prefix_cache=MagicMock())
+
+    worker.reset_prefix_cache()
+
+    worker.engine.reset_prefix_cache.assert_called_once_with()
+
+
+def test_dynamo_generation_executor_worker_rejects_unsupported_engine():
+    worker = DynamoGenerationExecutorWorker.__new__(DynamoGenerationExecutorWorker)
+    worker.engine = SimpleNamespace()
+
+    with pytest.raises(NotImplementedError, match="PyTorch backend"):
+        worker.reset_prefix_cache()
+
+
+def test_dynamo_generation_executor_ipc_factory_uses_custom_worker(monkeypatch):
+    class FakeWorker:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(trt_engine_mod, "DynamoGenerationExecutorWorker", FakeWorker)
+
+    worker = trt_engine_mod.DynamoGenerationExecutor._create_ipc_executor(
+        {"model": "dummy-model"},
+        model_world_size=1,
+        mpi_session=None,
+        postproc_worker_config=None,
+        is_llm_executor=True,
+        use_worker=True,
+    )
+
+    assert worker.kwargs == {
+        "model": "dummy-model",
+        "is_llm_executor": True,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -839,24 +839,7 @@ class BaseWorkerHandler(LoraMixin, RLMixin, BaseGenerativeHandler[RequestT, Resp
                 return
 
             timeout_s = float(request.get("timeout_s", request.get("timeout", 0.0)))
-            try:
-                signature = inspect.signature(flush_cache)
-
-                def supports_kwarg(name: str) -> bool:
-                    return name in signature.parameters or any(
-                        parameter.kind == inspect.Parameter.VAR_KEYWORD
-                        for parameter in signature.parameters.values()
-                    )
-
-            except (TypeError, ValueError):
-
-                def supports_kwarg(name: str) -> bool:
-                    return name == "timeout_s"
-
-            flush_kwargs = {}
-            if supports_kwarg("timeout_s"):
-                flush_kwargs["timeout_s"] = timeout_s
-            result = await flush_cache(**flush_kwargs)
+            result = await flush_cache(timeout_s=timeout_s)
 
             success = getattr(result, "success", None)
             if success is False or result is False:

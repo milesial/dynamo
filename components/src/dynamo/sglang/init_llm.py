@@ -173,7 +173,6 @@ async def init_decode(
             clear_endpoint.serve_endpoint(
                 handler.clear_kv_blocks,
                 metrics_labels=metrics_labels,
-                health_check_payload=health_check_payload,
             ),
             register_model_with_readiness_gate(
                 engine,
@@ -315,7 +314,6 @@ async def init_prefill(
             clear_endpoint.serve_endpoint(
                 handler.clear_kv_blocks,
                 metrics_labels=metrics_labels,
-                health_check_payload=health_check_payload,
             ),
             register_model_with_readiness_gate(
                 engine,
