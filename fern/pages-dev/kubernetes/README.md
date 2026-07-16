@@ -2,24 +2,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 title: Kubernetes Quickstart
+subtitle: Quickstart for deploying a model on Kubernetes with Helm and the Dynamo operator.
 ---
 
 Get a model running on Kubernetes in minutes.
 
 Dynamo's production path is Kubernetes-native: you install the platform with
-Helm, submit Dynamo CRDs, and let the operator reconcile inference graphs into
-pods, services, routing, model-loading, and scaling resources. The local and
-container guides remain useful for development, but Kubernetes is the canonical
-path for shared GPU clusters and multi-node serving.
+Helm, submit Dynamo custom resources, and let the operator reconcile inference
+graphs into pods, services, routing, model-loading, and scaling resources. The
+local and container guides remain useful for development, but Kubernetes is the
+canonical path for shared GPU clusters and multi-node serving.
 
 <Note>
-**Deployment modes.** Dynamo supports two deployment modes on Kubernetes. This quickstart uses **standalone mode**, where the Dynamo Frontend serves requests and the integrated Dynamo Router does KV-aware routing. Dynamo can also run in **gateway mode** behind a [Gateway API Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) gateway, where KV-aware routing happens in the Dynamo Endpoint Picker Plugin (EPP) at the gateway layer and the Frontend runs as a sidecar in `--router-mode direct`. See the [Inference Gateway (GAIE) guide](inference-gateway.md) to set up gateway mode.
+**Request entry.** This quickstart uses Dynamo-native Frontend routing: the Dynamo Frontend
+receives requests and the integrated Dynamo Router selects workers. Dynamo can also integrate
+Kubernetes-natively with [Gateway API Inference Extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension),
+where Gateway API receives requests and calls the Dynamo EPP for endpoint selection. See the
+[GAIE guide](gateway-api/README.mdx) for the Gateway API path.
 </Note>
 
 ## Prerequisites
 
-- Kubernetes cluster (v1.24+) with GPU nodes
-- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl) (v1.24+)
+- Kubernetes cluster (v1.30+) with GPU nodes
+- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl) (v1.30+)
 - [Helm](https://helm.sh/docs/intro/install/) (v3.0+) installed
 - [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html) installed on the cluster
 - HuggingFace token secret on cluster
@@ -76,7 +81,7 @@ Optionally, verify your cluster is ready:
 export NAMESPACE=dynamo-system
 helm install dynamo-platform \
   oci://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform \
-  --version "1.0.2" \
+  --version "1.2.1" \
   --namespace "$NAMESPACE" \
   --create-namespace
 ```
@@ -136,7 +141,7 @@ metadata:
 spec:
   model: Qwen/Qwen3-0.6B
   backend: auto
-  image: "nvcr.io/nvidia/ai-dynamo/dynamo-planner:1.1.1"  # dynamo-frontend for Dynamo < 1.1.0
+  image: "nvcr.io/nvidia/ai-dynamo/dynamo-planner:1.2.1"  # dynamo-frontend for Dynamo < 1.1.0
 ```
 
 The DGDR generates a DGD similar in shape to the following. If you already know
@@ -158,7 +163,7 @@ spec:
         spec:
           containers:
             - name: main
-              image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.1.1
+              image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
               envFrom:
                 - secretRef:
                     name: hf-token-secret
@@ -169,7 +174,7 @@ spec:
         spec:
           containers:
             - name: main
-              image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.1.1
+              image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
               command:
                 - python3
                 - -m
